@@ -119,10 +119,10 @@ class ApplicationSupport(object):
             pyos.GUI.OKDialog("Cannot Open", "The file "+short+" cannot be opened because no installed application supports the "+path[path.rfind("."):]+" format.").display()
             return
         text = pyos.GUI.Text((2, 2), "Select an application to open "+str(short), state.getColorPalette().getColor("item"))
-        self.selector = pyos.GUI.Selector((0, 20), [app.name for app in suitable], width=240, height=40,
+        self.selector = pyos.GUI.Selector((0, 20), [app.name for app in suitable], width=app.ui.width, height=40,
                                      onValueChanged=self.setCurrentSelection,
                                      border=1, borderColor=state.getColorPalette().getColor("item"))
-        cont = pyos.GUI.Container((0, application.ui.height-95), color=state.getColorPalette().getColor("background"), width=240, height=95,
+        cont = pyos.GUI.Container((0, application.ui.height-95), color=state.getColorPalette().getColor("background"), width=app.ui.width, height=95,
                                   border=1, borderColor=state.getColorPalette().getColor("item"))
         cont.addChild(text)
         cont.addChild(self.selector)
@@ -160,7 +160,7 @@ class FileEntry(pyos.GUI.Container):
             self.icon = pyos.GUI.Image((0, 0), surface=state.getIcons().getLoadedIcon("folder"), width=40, height=40,
                                        onClick=self.toggleSelection,
                                        onLongClick=self.eventBindings.get("onClick", pyos.Application.dummy), onLongClickData=(self,))
-        self.sizeText = pyos.GUI.Text((self.width-40, 12), self.getSize(), state.getColorPalette().getColor("item"), 16,
+        self.sizeText = pyos.GUI.Text((self.computedWidth-40, 12), self.getSize(), state.getColorPalette().getColor("item"), 16,
                                       onClick=self.eventBindings.get("onClick", pyos.Application.dummy), onClickData=(self,),
                                       onLongClick=self.eventBindings.get("onLongClick", pyos.Application.dummy), onLongClickData=(self.shortPath, self.absolutePath))
         self.text = pyos.GUI.Text((41, 12), self.shortPath, state.getColorPalette().getColor("item"), 16,
@@ -205,7 +205,7 @@ class FileExplorer(pyos.GUI.Container):
         super(FileExplorer, self).__init__(position, **data)
         self.path = str(pyos.__file__).rstrip(".pyos.pyc").replace("\\", "/")
         self.selected = []
-        self.fileList = pyos.GUI.ListScrollableContainer((0, 40), width=self.width, height=self.height-40, color=state.getColorPalette().getColor("background"),
+        self.fileList = pyos.GUI.ListScrollableContainer((0, 40), width=self.computedWidth, height=self.computedHeight-40, color=state.getColorPalette().getColor("background"),
                                                          margin=0, padding=0, scrollAmount=80,
                                                          onLongClick=self.newFolderAsk)
         self.addChild(self.fileList)
@@ -216,7 +216,7 @@ class FileExplorer(pyos.GUI.Container):
         self.loadDir()
         
     def generateButtonBar(self):
-        self.buttonBar = pyos.GUI.ButtonRow((0, 0), width=self.width, height=40, color=state.getColorPalette().getColor("background"),
+        self.buttonBar = pyos.GUI.ButtonRow((0, 0), width=self.computedWidth, height=40, color=state.getColorPalette().getColor("background"),
                                             border=1, borderColor=state.getColorPalette().getColor("item"),
                                             padding=0, margin=0)
         up = pyos.GUI.Image((0,0), surface=state.getIcons().getLoadedIcon("up"), width=40, height=40,
@@ -249,7 +249,7 @@ class FileExplorer(pyos.GUI.Container):
     def loadDir(self):
         self.fileList.clearChildren()
         for entry in self.scanDir():
-            entryContainer = FileEntry((0, -80), pyos.os.path.join(self.path, entry), width=self.fileList.container.width, height=40,
+            entryContainer = FileEntry((0, -80), pyos.os.path.join(self.path, entry), width=self.fileList.container.computedWidth, height=40,
                                              color=state.getColorPalette().getColor("background"), selected=(pyos.os.path.join(self.path, entry) in self.selected),
                                              onSelected=self.selected.append, onDeselected=self.selected.remove,
                                              onClick=self.navToSub,
@@ -366,7 +366,7 @@ class PickerExplorer(FileExplorer):
         self.onSelectData = data.get("onSelectData", ())
             
     def generateButtonBar(self):
-        self.buttonBar = pyos.GUI.ButtonRow((0, 0), width=self.width, height=40, color=state.getColorPalette().getColor("background"),
+        self.buttonBar = pyos.GUI.ButtonRow((0, 0), width=self.computedWidth, height=40, color=state.getColorPalette().getColor("background"),
                                             border=1, borderColor=state.getColorPalette().getColor("item"),
                                             padding=0, margin=0)
         up = pyos.GUI.Image((0,0), surface=state.getIcons().getLoadedIcon("up"), width=40, height=40,
@@ -435,6 +435,8 @@ class SaveAs(object):
     def __init__(self, promptText, startDir="default", **data):
         self.onSelectMethod = data.get("onSelect", pyos.Application.dummy)
         self.onSelectData = data.get("onSelectData", ())
+        self.extension = data.get("extension", "")
+        self.nameText = data.get("name", "")
         self.prompt = promptText
         self.startDir = startDir
         self.folder = ""
@@ -450,10 +452,12 @@ class SaveAs(object):
         self.displayNameDialog()
         
     def displayNameDialog(self):
-        pyos.GUI.AskDialog("Save As", self.prompt, self.saveName).display()
+        ad = pyos.GUI.AskDialog("Save As", self.prompt, self.saveName)
+        ad.textEntryField.appendChar(self.nameText)
+        ad.display()
         
     def saveName(self, name):
-        self.name = name
+        self.name = name + self.extension if not name.endswith(self.extension) else name
         self.path = pyos.os.path.join(self.folder, self.name)
         if pyos.os.path.exists(self.path):
             self.displayOverwriteDialog()

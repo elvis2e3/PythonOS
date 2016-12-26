@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 '''
 Created on Dec 27, 2015
 
@@ -5,6 +7,10 @@ Created on Dec 27, 2015
 @copyright: MIT License
 '''
 import pygame
+try:
+    import pygame.freetype
+except ImportError:
+    pass
 import json
 import os
 import __builtin__
@@ -15,9 +21,12 @@ from thread import start_new_thread
 from datetime import datetime
 from __builtin__ import staticmethod
 from traceback import format_exc
+from copy import deepcopy
 
 #state = None
 screen = None
+
+settings = {}
 
 DEFAULT = 0xada
     
@@ -28,6 +37,15 @@ def readFile(path):
         lines.append(line.rstrip())
     f.close()
     return lines
+
+def readJSON(path, default={}):
+    try:
+        f = open(path, "rU")
+        jsd = json.loads(str(unicode(f.read(), errors="ignore")))
+        f.close()
+        return jsd
+    except:
+        return default
     
 class Thread(object):
     def __init__(self, method, **data):
@@ -182,16 +200,21 @@ class GUI(object):
         global screen
         self.orientation = 0 #0 for portrait, 1 for landscape
         self.timer = None
-        self.update_interval = 30
+        self.update_interval = settings.get("target_fps", 30)
         pygame.init()
-        if __import__("sys").platform == "linux2" and os.path.isdir("/home/pi"):
+        try:
+            pygame.display.set_icon(pygame.image.load("res/icons/menu.png"))
+        except:
+            pass
+        if __import__("sys").platform == "linux2" and os.path.exists("/etc/pyos"):
             pygame.mouse.set_visible(False)
             info = pygame.display.Info()
             self.width = info.current_w
             self.height = info.current_h
             screen = pygame.display.set_mode((info.current_w, info.current_h))
         else:
-            screen = pygame.display.set_mode((240, 320), pygame.HWACCEL)
+            screen = pygame.display.set_mode((settings.get("screen_size", {"width":240}).get("width"),
+                                              settings.get("screen_size", {"height":320}).get("height")), pygame.HWACCEL)
             self.width = screen.get_width()
             self.height = screen.get_height()
         try:
@@ -204,17 +227,16 @@ class GUI(object):
         self.timer = pygame.time.Clock()
         pygame.display.set_caption("PyOS 6")
         
-    def orient(self, orientation):
+    def orient(self):
         global screen
-        if orientation != self.orientation:
-            self.orientation = orientation
-            if orientation == 0:
-                self.width = 240
-                self.height = 320
-            if orientation == 1:
-                self.width = 320
-                self.height = 240
-            screen = pygame.display.set_mode((self.width, self.height))
+        self.orientation = 0 if self.orientation == 1 else 1
+        bk = self.width
+        self.width = self.height
+        self.height = bk
+        screen = pygame.display.set_mode((self.width, self.height))
+        for app in state.getApplicationList().getApplicationList():
+            app.ui.refresh()
+        State.rescue()
             
     def repaint(self):
         screen.fill(state.getColorPalette().getColor("background"))
@@ -240,21 +262,33 @@ class GUI(object):
     
     @staticmethod
     def getCenteredCoordinates(component, larger):
-        return [(larger.width / 2) - (component.width / 2), (larger.height / 2) - (component.height / 2)]
+        return [(larger.computedWidth / 2) - (component.computedWidth / 2), (larger.computedHeight / 2) - (component.computedHeight / 2)]
         
     class Font(object):        
         def __init__(self, path="res/RobotoCondensed-Regular.ttf", minSize=10, maxSize=30):
             self.path = path
             curr_size = minSize
             self.sizes = {}
+            self.ft_support = True
+            self.ft_sizes = {}
             while curr_size <= maxSize:
+                if self.ft_support:
+                    try:
+                        self.ft_sizes[curr_size] = pygame.freetype.Font(path, curr_size)
+                    except:
+                        self.ft_support = False
                 self.sizes[curr_size] = pygame.font.Font(path, curr_size)
                 curr_size += 1
             
-        def get(self, size=14):
-            if size in self.sizes:
+        def get(self, size=14, ft=False):
+            if ft and self.ft_support:
+                if size not in self.ft_sizes:
+                    self.ft_sizes[size] = pygame.freetype.Font(self.path, size)
+                return self.ft_sizes[size]
+            else:
+                if size not in self.sizes:
+                    self.sizes[size] = pygame.font.Font(self.path, size)
                 return self.sizes[size]
-            return pygame.font.Font(self.path, size)
             
     class Icons(object):
         def __init__(self):
@@ -403,7 +437,7 @@ class GUI(object):
             self.pos = self.mouseDown.pos
             
         def intermediateUpdate(self, mouseMove):
-            if self.mouseUp == None:
+            if self.mouseUp == None and (len(self.intermediatePoints) == 0 or mouseMove.pos != self.intermediatePoints[-1]):
                 self.intermediatePoints.append(mouseMove.pos)
             
         def end(self, mouseUp):
@@ -468,55 +502,25 @@ class GUI(object):
         
     class Component(object):                    
         def __init__(self, position, **data):
-            self.position = list(position)[:]
-            self.width = -1
-            self.height = -1
+            self.position = list(deepcopy(position))
             self.eventBindings = {}
             self.eventData = {}
             self.data = data
-            self.surface = None
+            self.surface = data.get("surface", None)
             self.border = 0
             self.borderColor = (0, 0, 0)
-            self.originalParamters = {
-                                      "position": position[:],
-                                      "width": data.get("width", data["surface"].get_width() if data.get("surface", False) else 0),
-                                      "height": data.get("height", data["surface"].get_height() if data.get("surface", False) else 0)
-                                      }
-            if "surface" in data:
-                self.surface = data["surface"]
-                if "width" in data or "height" in data:
-                    if "width" in data:
-                        if type(data["width"]) == str and data["width"].endswith("%"):
-                            self.width = int((state.getActiveApplication().ui.width/100)*int(data["width"].replace("%", "")))
-                        else:
-                            self.width = data["width"]
-                        if not "height" in data:
-                            self.height = self.surface.get_height()
-                    if "height" in data:
-                        if type(data["height"]) == str and data["height"].endswith("%"):
-                            self.height = int((state.getActiveApplication().ui.height/100)*int(data["height"].replace("%", "")))
-                        else:
-                            self.height = data["height"]
-                        if self.width == -1:
-                            self.width = self.surface.get_width()
-                    self.surface = pygame.transform.scale(self.surface, (self.width, self.height))
-                else:
-                    self.width = self.surface.get_width()
-                    self.height = self.surface.get_height()
-            else:
-                if "width" in data and type(data["width"]) == str and data["width"].endswith("%"):
-                    self.width = int((state.getActiveApplication().ui.width/100.0)*int(data["width"].replace("%", "")))
-                else:
-                    self.width = data.get("width", 0)
-                if "height" in data and type(data["height"]) == str and data["height"].endswith("%"):
-                    self.height = int((state.getActiveApplication().ui.height/100.0)*int(data["height"].replace("%", "")))
-                else:
-                    self.height = data.get("height", 0)
-                self.surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-            if type(self.position[0]) == str and self.position[0].endswith("%"):
-                self.position[0] = int((state.getActiveApplication().ui.width/100.0)*int(self.position[0].replace("%", "")))
-            if type(self.position[1]) == str and self.position[1].endswith("%"):
-                self.position[1] = int((state.getActiveApplication().ui.height/100.0)*int(self.position[1].replace("%", "")))
+            self.resizable = data.get("resizable", False)
+            self.originals = [list(deepcopy(position)),
+                              data.get("width", data["surface"].get_width() if data.get("surface", False) != False else 0),
+                              data.get("height", data["surface"].get_height() if data.get("surface", False) != False else 0)
+                              ]
+            self.width = self.originals[1]
+            self.height = self.originals[2]
+            self.computedWidth = 0
+            self.computedHeight = 0
+            self.computedPosition = [0, 0]
+            self.rect = pygame.Rect(self.computedPosition, (self.computedWidth, self.computedHeight))
+            self.setDimensions()
             self.eventBindings["onClick"] = data.get("onClick", None)
             self.eventBindings["onLongClick"] = data.get("onLongClick", None)
             self.eventBindings["onIntermediateUpdate"] = data.get("onIntermediateUpdate", None)
@@ -530,6 +534,56 @@ class GUI(object):
             self.innerOffset = [0, 0]
             self.internalClickOverrides = {}
             
+        def _percentToPix(self, value, scale):
+            return int(int(value.rstrip("%")) * scale)
+            
+        def setDimensions(self):
+            old_surface = self.surface.copy() if self.surface != None else None
+            if self.data.get("fixedSize", False):
+                self.computedWidth = self.data.get("width")
+                self.computedHeight = self.data.get("height")
+                self.rect = pygame.Rect(self.computedPosition, (self.computedWidth, self.computedHeight))
+                self.surface = pygame.Surface((self.computedWidth, self.computedHeight), pygame.SRCALPHA)
+                if old_surface != None: self.surface.blit(old_surface, (0, 0))
+                return
+            appc = state.getActiveApplication().ui
+            #Compute Position
+            if type(self.position[0]) == str:
+                self.computedPosition[0] = self._percentToPix(self.position[0], (state.getActiveApplication().ui.width/100.0))
+            else:
+                if self.resizable:
+                    self.computedPosition[0] = int(self.position[0] * appc.scaleX)
+                else:
+                    self.computedPosition[0] = int(self.position[0])
+            if type(self.position[1]) == str:
+                self.computedPosition[1] = self._percentToPix(self.position[1], (state.getActiveApplication().ui.height/100.0))
+            else:
+                if self.resizable:
+                    self.computedPosition[1] = int(self.position[1] * appc.scaleY)
+                else:
+                    self.computedPosition[1] = int(self.position[1])
+                    
+            #Compute Width and Height
+            if type(self.width) == str:
+                self.computedWidth = self._percentToPix(self.width, (state.getActiveApplication().ui.width/100.0))
+            else:
+                if self.resizable:
+                    self.computedWidth = int(self.width * appc.scaleX)
+                else:
+                    self.computedWidth = int(self.width)
+            if type(self.height) == str:
+                self.computedHeight = self._percentToPix(self.height, (state.getActiveApplication().ui.height/100.0))
+            else:
+                if self.resizable:
+                    self.computedHeight = int(self.height * appc.scaleY)
+                else:
+                    self.computedHeight = int(self.height)
+                    
+            #print "Computed to: " + str(self.computedPosition) + ", " + str(self.computedWidth) + "x" + str(self.computedHeight) + ", " + str(self.resizable)
+            self.rect = pygame.Rect(self.computedPosition, (self.computedWidth, self.computedHeight))                    
+            self.surface = pygame.Surface((self.computedWidth, self.computedHeight), pygame.SRCALPHA)
+            if old_surface != None: self.surface.blit(old_surface, (0, 0))
+
         def onClick(self):
             if "onClick" in self.internalClickOverrides:
                 self.internalClickOverrides["onClick"][0](*self.internalClickOverrides["onClick"][1])
@@ -570,12 +624,25 @@ class GUI(object):
             self.eventData["onIntermediateUpdate"] = data
 
         def render(self, largerSurface):
+            recompute = False
+            if self.position != self.originals[0]:
+                self.originals[0] = list(deepcopy(self.position))
+                recompute = True
+            if self.width != self.originals[1]:
+                self.originals[1] = self.width
+                recompute = True
+            if self.height != self.originals[2]:
+                self.originals[2] = self.height
+                recompute = True
+            if recompute:
+                self.setDimensions()
             if self.border > 0:
-                pygame.draw.rect(self.surface, self.borderColor, [0, 0, self.width, self.height], self.border)
-            largerSurface.blit(self.surface, self.position)
+                pygame.draw.rect(self.surface, self.borderColor, [0, 0, self.computedWidth, self.computedHeight], self.border)
+            if not self.surface.get_locked():
+                largerSurface.blit(self.surface, self.computedPosition)
             
         def refresh(self):
-            self.surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+            self.setDimensions()
             
         def getInnerClickCoordinates(self):
             return self.innerClickCoordinates
@@ -584,16 +651,25 @@ class GUI(object):
             self.innerOffset = [offsetX, offsetY]
             adjusted = [mouseEvent.pos[0] - offsetX, mouseEvent.pos[1] - offsetY]
             if adjusted[0] < 0 or adjusted[1] < 0: return False
-            if adjusted[0] >= self.position[0] and adjusted[0] <= self.position[0] + self.width:
-                if adjusted[1] >= self.position[1] and adjusted[1] <= self.position[1] + self.height:
-                    self.innerClickCoordinates = tuple(adjusted)
-                    if not isinstance(mouseEvent, GUI.IntermediateUpdateEvent):
-                        self.data["lastEvent"] = mouseEvent
-                    return True
+            if self.rect.collidepoint(adjusted):
+                self.innerClickCoordinates = tuple(adjusted)
+                if not isinstance(mouseEvent, GUI.IntermediateUpdateEvent):
+                    self.data["lastEvent"] = mouseEvent
+                return True
             return False
         
         def setPosition(self, pos):
             self.position = list(pos)[:]
+            self.refresh()
+            
+        def setSurface(self, new_surface, override_dimensions=False):
+            if new_surface.get_width() != self.computedWidth or new_surface.get_height() != self.computedHeight:
+                if override_dimensions:
+                    self.width = new_surface.get_width()
+                    self.height = new_surface.get_height()
+                else:
+                    new_surface = pygame.transform.scale(new_surface, (self.computedWidth, self.computedHeight))
+            self.surface = new_surface
             
         @staticmethod
         def default(*items):
@@ -617,6 +693,9 @@ class GUI(object):
             if "children" in data: self.childComponents = data["children"]
             
         def addChild(self, component):
+            if self.resizable and "resizeble" not in component.data:
+                component.resizable = True
+                component.refresh()
             self.childComponents.append(component)
             
         def addChildren(self, *children):
@@ -638,16 +717,16 @@ class GUI(object):
                 child = self.childComponents[currChild]
                 if "SKIP_CHILD_CHECK" in child.__dict__:
                     if child.SKIP_CHILD_CHECK:
-                        if child.checkClick(mouseEvent, offsetX + self.position[0], offsetY + self.position[1]):
+                        if child.checkClick(mouseEvent, offsetX + self.computedPosition[0], offsetY + self.computedPosition[1]):
                             return child
                         else:
                             continue
                     else:
-                        subCheck = child.getClickedChild(mouseEvent, offsetX + self.position[0], offsetY + self.position[1])
+                        subCheck = child.getClickedChild(mouseEvent, offsetX + self.computedPosition[0], offsetY + self.computedPosition[1])
                         if subCheck == None: continue
                         return subCheck
                 else:
-                    if child.checkClick(mouseEvent, offsetX + self.position[0], offsetY + self.position[1]):
+                    if child.checkClick(mouseEvent, offsetX + self.computedPosition[0], offsetY + self.computedPosition[1]):
                         return child
             if self.checkClick(mouseEvent, offsetX, offsetY):
                 return self
@@ -655,11 +734,12 @@ class GUI(object):
         
         def getChildAt(self, position):
             for child in self.childComponents:
-                if child.position == list(position):
+                if child.computedPosition == list(position):
                     return child
             return None
         
         def render(self, largerSurface):
+            if self.surface.get_locked(): return
             if not self.transparent:
                 self.surface.fill(self.backgroundColor)
             else:
@@ -676,17 +756,28 @@ class GUI(object):
                 
     class AppContainer(Container):        
         def __init__(self, application):
-            super(GUI.AppContainer, self).__init__((0, 0), width=screen.get_width(), height=screen.get_height()-40)
             self.application = application
             self.dialogs = []
             self.dialogScreenFreezes = []
             self.dialogComponentsFreezes = []
+            self.scaleX = 1.0
+            self.scaleY = 1.0
+            if self.application.parameters.get("resize", False):
+                dW = float(self.application.parameters.get("size", {"width": 240}).get("width"))
+                dH = float(self.application.parameters.get("size", {"height": 320}).get("height"))
+                self.scaleX = (state.getGUI().width / dW)
+                self.scaleY = (state.getGUI().height / dH)
+                super(GUI.AppContainer, self).__init__((0, 0), width=screen.get_width(), height=screen.get_height()-40,
+                                                       resizable=True, fixedSize=True)
+            else:
+                super(GUI.AppContainer, self).__init__((0, 0), width=screen.get_width(), height=screen.get_height()-40,
+                                                       resizable=False, fixedSize=True)
             
         def setDialog(self, dialog):
             self.dialogs.insert(0, dialog)
             self.dialogComponentsFreezes.insert(0, self.childComponents[:])
             self.dialogScreenFreezes.insert(0, self.surface.copy())
-            self.childComponents = [dialog.baseContainer]
+            self.addChild(dialog.baseContainer)
             
         def clearDialog(self):
             self.dialogs.pop(0)
@@ -702,36 +793,55 @@ class GUI(object):
                 self.dialogs[0].baseContainer.render(self.surface)
             screen.blit(self.surface, self.position)
             
+        def refresh(self):
+            self.width = screen.get_width()
+            self.height = screen.get_height() - 40
+            if self.application.parameters.get("resize", False):
+                dW = float(self.application.parameters.get("size", {"width": 240}).get("width"))
+                dH = float(self.application.parameters.get("size", {"height": 320}).get("height"))
+                self.scaleX = 1.0 * (state.getGUI().width / dW)
+                self.scaleY = 1.0 * (state.getGUI().height / dH)
+            #super(GUI.AppContainer, self).refresh()
+            
     class Text(Component):        
         def __init__(self, position, text, color=DEFAULT, size=DEFAULT, **data):
             #Defaults are "item" and 14.
             color, size = GUI.Component.default(color, state.getColorPalette().getColor("item"), size, 14)
             self.text = text
+            self._originalText = text
             self.size = size
             self.color = color
             self.font = data.get("font", state.getFont())
-            self.refresh()
+            self.use_freetype = data.get("freetype", False)
+            self.responsive_width = data.get("responsive_width", True)
             data["surface"] = self.getRenderedText()
             super(GUI.Text, self).__init__(position, **data)
             
         def getRenderedText(self):
-            return self.font.get(self.size).render(str(self.text), 1, self.color)
+            if self.use_freetype:
+                return self.font.get(self.size, True).render(str(self.text), self.color)
+            return self.font.get(self.size).render(self.text, 1, self.color)
             
         def refresh(self):
-            self.surface = self.getRenderedText()
-            self.width = self.surface.get_width()
-            self.height = self.surface.get_height()
-            
+            self.surface = self.getRenderedText()        
+
+        def render(self, largerSurface):
+            if self.text != self._originalText:
+                self.setText(self.text)
+            super(GUI.Text, self).render(largerSurface)
+        
         def setText(self, text):
-            self.text = str(text)
+            self.text = text if type(text) == str or type(text) == unicode else str(text)
+            self._originalText = self.text
             self.refresh()
+            if self.responsive_width:
+                self.width = self.surface.get_width()
+                self.height = self.surface.get_height()
+            self.setDimensions()
             
-        def getScaledSize(self, new_dimensions):
-            return new_dimensions[1] * (self.size / self.height)
-            
-    class MultiLineText(Text):
+    class MultiLineText(Component):
         @staticmethod
-        def render_textrect(string, font, rect, text_color, background_color, justification):
+        def render_textrect(string, font, rect, text_color, background_color, justification, use_ft):
             final_lines = []
             requested_lines = string.splitlines()
             err = None
@@ -740,7 +850,7 @@ class GUI(object):
                     words = requested_line.split(' ')
                     for word in words:
                         if font.size(word)[0] >= rect.width:
-                            print "The word " + word + " is too long to fit in the rect passed."
+                            #print "The word " + word + " is too long to fit in the rect passed."
                             err = 0
                     accumulated_line = ""
                     for word in words:
@@ -760,7 +870,11 @@ class GUI(object):
                 if accumulated_height + font.size(line)[1] >= rect.height:
                     err = 1
                 if line != "":
-                    tempsurface = font.render(line, 1, text_color)
+                    tempsurface = None
+                    if use_ft:
+                        tempsurface = font.render(line, text_color)
+                    else:
+                        tempsurface = font.render(line, 1, text_color)
                     if justification == 0:
                         surface.blit(tempsurface, (0, accumulated_height))
                     elif justification == 1:
@@ -775,22 +889,34 @@ class GUI(object):
         
         def __init__(self, position, text, color=DEFAULT, size=DEFAULT, justification=DEFAULT, **data):
             #Defaults are "item", and 0 (left).
-            color, justification = GUI.Component.default(color, state.getColorPalette().getColor("item"),
+            color, size, justification = GUI.Component.default(color, state.getColorPalette().getColor("item"), size, 14,
                                                          justification, 0)
             self.justification = justification
             self.color = color
             self.size = size
-            super(GUI.Text, self).__init__(position, **data)
-            super(GUI.MultiLineText, self).__init__(position, text, color, size, **data)
+            self.text = text if type(text) == str or type(text) == unicode else str(text)
+            self.textSurface = None
+            self.font = data.get("font", state.getFont())
+            self.use_freetype = data.get("freetype", False)
+            super(GUI.MultiLineText, self).__init__(position, **data)
+            self.refresh()
             if self.width > state.getGUI().width:
                 self.width = state.getGUI().width
                 
         def getRenderedText(self):
-            return GUI.MultiLineText.render_textrect(self.text, self.font.get(self.size), pygame.Rect(self.position[0], self.position[1], self.width, self.height),
-                                                     self.color, (0, 0, 0, 0), self.justification)[0]
+            return GUI.MultiLineText.render_textrect(self.text, self.font.get(self.size, self.use_freetype), pygame.Rect(0, 0, self.computedWidth, self.computedHeight),
+                                                     self.color, (0, 0, 0, 0), self.justification, self.use_freetype)[0]
             
         def refresh(self):
-            self.surface = self.getRenderedText()
+            super(GUI.MultiLineText, self).refresh()
+            self.textSurface = self.getRenderedText()
+            self.surface.fill((0, 0, 0, 0))
+            self.surface.blit(self.textSurface, (0, 0))
+            
+        def setText(self, text):
+            self.text = text if type(text) == str or type(text) == unicode else str(text)
+            self.setDimensions()
+            self.refresh()
             
     class ExpandingMultiLineText(MultiLineText):
         def __init__(self, position, text, color=DEFAULT, size=DEFAULT, justification=DEFAULT, lineHeight=DEFAULT, **data):
@@ -803,21 +929,24 @@ class GUI(object):
             self.linkedScroller = data.get("scroller", None)
             self.textLines = []
             super(GUI.ExpandingMultiLineText, self).__init__(position, text, color, size, justification, **data)
+            self.height = self.computedHeight
             self.refresh()
             
         def getRenderedText(self):
             fits = False
             surf = None
             while not fits:
-                d = GUI.MultiLineText.render_textrect(self.text, self.font.get(self.size), pygame.Rect(self.position[0], self.position[1], self.width, self.height),
-                                                      self.color, (0, 0, 0, 0), self.justification)
+                d = GUI.MultiLineText.render_textrect(self.text, self.font.get(self.size), pygame.Rect(self.computedPosition[0], self.computedPosition[1], self.computedWidth, self.height),
+                                                      self.color, (0, 0, 0, 0), self.justification, self.use_freetype)
                 surf = d[0]
                 fits = d[1] != 1
                 self.textLines = d[2]
                 if not fits:
                     self.height += self.lineHeight
-            if self.linkedScroller != None:
-                self.linkedScroller.refresh(False)
+                    self.computedHeight = self.height
+            self.setDimensions()
+            #if self.linkedScroller != None:
+            #    self.linkedScroller.refresh(False)
             return surf
             
     class Image(Component):        
@@ -825,6 +954,7 @@ class GUI(object):
             self.path = ""
             self.originalSurface = None
             self.transparent = True
+            self.resize_image = data.get("resize_image", True)
             if "path" in data:
                 self.path = data["path"]
             else:
@@ -832,7 +962,10 @@ class GUI(object):
             if "surface" not in data:
                 data["surface"] = pygame.image.load(data["path"])
             self.originalSurface = data["surface"]
+            self.originalWidth = self.originalSurface.get_width()
+            self.originalHeight = self.originalSurface.get_height()
             super(GUI.Image, self).__init__(position, **data)
+            if self.resize_image: self.setSurface(pygame.transform.scale(self.originalSurface, (self.computedWidth, self.computedHeight)))
             
         def setImage(self, **data):
             if "path" in data:
@@ -848,11 +981,10 @@ class GUI(object):
             self.refresh()
             
         def refresh(self):
-            super(GUI.Image, self).refresh()
-            self.surface = pygame.transform.scale(self.originalSurface, (self.width, self.height))
-            
-        def render(self, largerSurface):
-            super(GUI.Image, self).render(largerSurface)
+            if self.resize_image:
+                self.setSurface(pygame.transform.scale(self.originalSurface, (self.computedWidth, self.computedHeight)))
+            else:
+                super(GUI.Image, self).refresh()
             
     class Slider(Component):
         def __init__(self, position, initialPct=0, **data):
@@ -871,19 +1003,19 @@ class GUI(object):
             self.percent = percent
         
         def refresh(self):
-            self.percentPixels = self.width / 100.0
+            self.percentPixels = self.computedWidth / 100.0
             super(GUI.Slider, self).refresh()
             
         def render(self, largerSurface):
             self.surface.fill(self.backgroundColor)
-            pygame.draw.rect(self.surface, self.color, [0, self.height/4, self.width, self.height/2])
-            pygame.draw.rect(self.surface, self.sliderColor, [(self.percent*self.percentPixels)-15, 0, 30, self.height])
+            pygame.draw.rect(self.surface, self.color, [0, self.computedHeight/4, self.computedWidth, self.computedHeight/2])
+            pygame.draw.rect(self.surface, self.sliderColor, [(self.percent*self.percentPixels)-15, 0, 30, self.computedHeight])
             super(GUI.Slider, self).render(largerSurface)
             
         def checkClick(self, mouseEvent, offsetX=0, offsetY=0):
             isClicked = super(GUI.Slider, self).checkClick(mouseEvent, offsetX, offsetY)
             if isClicked:
-                self.percent = ((mouseEvent.pos[0] - offsetX - self.position[0])) / self.percentPixels
+                self.percent = ((mouseEvent.pos[0] - offsetX - self.computedPosition[0])) / self.percentPixels
                 if self.percent > 100.0: self.percent = 100.0
                 self.onChange()
             return isClicked
@@ -897,20 +1029,23 @@ class GUI(object):
             bgColor, textColor, textSize = GUI.Component.default(bgColor, state.getColorPalette().getColor("darker:background"),
                                   textColor, state.getColorPalette().getColor("item"),
                                   textSize, 14)
-            self.textComponent = GUI.Text((0, 0), text, textColor, textSize, font=data.get("font", state.getFont()))
+            self.textComponent = GUI.Text((0, 0), text, textColor, textSize, font=data.get("font", state.getFont()), freetype=data.get("freetype", False))
             self.paddingAmount = data.get("padding", 5)
-            if "width" not in data: data["width"] = self.textComponent.width + (2 * self.paddingAmount)
-            if "height" not in data: data["height"] = self.textComponent.height + (2 * self.paddingAmount)
+            if "width" not in data: data["width"] = self.textComponent.computedWidth + (2 * self.paddingAmount)
+            if "height" not in data: data["height"] = self.textComponent.computedHeight + (2 * self.paddingAmount)
             super(GUI.Button, self).__init__(position, **data)
             self.SKIP_CHILD_CHECK = True
             self.textComponent.setPosition(GUI.getCenteredCoordinates(self.textComponent, self))
             self.backgroundColor = bgColor
             self.addChild(self.textComponent)
             
-        def setText(self, text):
-            self.textComponent.text = str(text)
-            self.textComponent.refresh()
+        def setDimensions(self):
+            super(GUI.Button, self).setDimensions()
             self.textComponent.setPosition(GUI.getCenteredCoordinates(self.textComponent, self))
+            
+        def setText(self, text):
+            self.textComponent.setText(text)
+            self.setDimensions()
             
         def render(self, largerSurface):
             super(GUI.Button, self).render(largerSurface)
@@ -928,7 +1063,7 @@ class GUI(object):
             super(GUI.Checkbox, self).__init__(position, **data)
             self.backgroundColor = data.get("backgroundColor", state.getColorPalette().getColor("background"))
             self.checkColor = data.get("checkColor", state.getColorPalette().getColor("accent"))
-            self.checkWidth = data.get("checkWidth", self.height/4)
+            self.checkWidth = data.get("checkWidth", self.computedHeight/4)
             self.checked = checked
             self.internalClickOverrides["onClick"] = [self.check, ()]
             
@@ -944,9 +1079,9 @@ class GUI(object):
         def render(self, largerSurface):
             self.surface.fill(self.backgroundColor)
             if self.checked:
-                pygame.draw.lines(self.surface, self.checkColor, False, [(0, self.height/2),
-                                                                         (self.width/2, self.height-self.checkWidth/2),
-                                                                         (self.width, 0)], self.checkWidth)
+                pygame.draw.lines(self.surface, self.checkColor, False, [(0, self.computedHeight/2),
+                                                                         (self.computedWidth/2, self.computedHeight-self.checkWidth/2),
+                                                                         (self.computedWidth, 0)], self.checkWidth)
             super(GUI.Checkbox, self).render(largerSurface)
             
     class Switch(Component):
@@ -973,14 +1108,14 @@ class GUI(object):
         def render(self, largerSurface):
             self.surface.fill(self.backgroundColor)
             if self.on:
-                pygame.draw.rect(self.surface, self.onColor, [self.width/2, 0, self.width/2, self.height])
+                pygame.draw.rect(self.surface, self.onColor, [self.computedWidth/2, 0, self.computedWidth/2, self.computedHeight])
             else:
-                pygame.draw.rect(self.surface, self.offColor, [0, 0, self.width/2, self.height])
-            pygame.draw.circle(self.surface, state.getColorPalette().getColor("item"), (self.width/4, self.height/2), self.height/4, 2)
-            pygame.draw.line(self.surface, state.getColorPalette().getColor("item"), (3*(self.width/4), self.height/4),
-                             (3*(self.width/4), 3*(self.height/4)), 2)
+                pygame.draw.rect(self.surface, self.offColor, [0, 0, self.computedWidth/2, self.computedHeight])
+            pygame.draw.circle(self.surface, state.getColorPalette().getColor("item"), (self.computedWidth/4, self.computedHeight/2), self.computedHeight/4, 2)
+            pygame.draw.line(self.surface, state.getColorPalette().getColor("item"), (3*(self.computedWidth/4), self.computedHeight/4),
+                             (3*(self.computedWidth/4), 3*(self.computedHeight/4)), 2)
             super(GUI.Switch, self).render(largerSurface)
-        
+                    
     class Canvas(Component):
         def __init__(self, position, **data):
             super(GUI.Canvas, self).__init__(position, **data)
@@ -992,9 +1127,9 @@ class GUI(object):
                 data["borderColor"] = state.getColorPalette().getColor("item")
             super(GUI.KeyboardButton, self).__init__(position, **data)
             self.SKIP_CHILD_CHECK = True
-            self.primaryTextComponent = GUI.Text((1, 0), symbol, state.getColorPalette().getColor("item"), 20, font=state.getTypingFont())
-            self.secondaryTextComponent = GUI.Text((self.width-8, 0), altSymbol, state.getColorPalette().getColor("item"), 10, font=state.getTypingFont())
-            self.primaryTextComponent.setPosition([GUI.getCenteredCoordinates(self.primaryTextComponent, self)[0]-6, self.height-self.primaryTextComponent.height-1])
+            self.primaryTextComponent = GUI.Text((1, 0), symbol, state.getColorPalette().getColor("item"), 20, font=data.get("font", state.getTypingFont()))
+            self.secondaryTextComponent = GUI.Text((self.computedWidth-8, 0), altSymbol, state.getColorPalette().getColor("item"), 10, font=data.get("font", state.getTypingFont()))
+            self.primaryTextComponent.setPosition([GUI.getCenteredCoordinates(self.primaryTextComponent, self)[0]-6, self.computedHeight-self.primaryTextComponent.computedHeight-1])
             self.addChild(self.primaryTextComponent)
             self.addChild(self.secondaryTextComponent)
             self.blinkTime = 0
@@ -1002,7 +1137,7 @@ class GUI(object):
             self.internalClickOverrides["onLongClick"] = (self.registerBlink, (True,))
             
         def registerBlink(self, lp=False):
-            self.blinkTime = state.getGUI().update_interval / 4
+            self.blinkTime = state.getGUI().update_interval / 6
             self.primaryTextComponent.color = state.getColorPalette().getColor("background")
             self.secondaryTextComponent.color = state.getColorPalette().getColor("background")
             self.backgroundColor = state.getColorPalette().getColor("accent" if lp else "item")
@@ -1057,14 +1192,14 @@ class GUI(object):
             if self.lastClickCoord != None and self.overflow > 0:
                 ydist = self.innerClickCoordinates[1] - self.lastClickCoord[1]
                 self.overflow -= ydist
-                if self.overflow > 0 and self.overflow + self.width < self.textComponent.width:
+                if self.overflow > 0 and self.overflow + self.computedWidth < self.textComponent.computedWidth:
                     self.textComponent.position[0] = 2 - self.overflow
                 else:
                     self.textComponent.position[0] = 2
             self.lastClickCoord = self.innerClickCoordinates
             
         def getPxPosition(self, fromPos=DEFAULT):
-            return state.getTypingFont().get(16).render(self.textComponent.text[:(self.indicatorPosition if fromPos==DEFAULT else fromPos)], 1, self.textComponent.color).get_width()
+            return state.getTypingFont().get(16).size(self.textComponent.text[:(self.indicatorPosition if fromPos==DEFAULT else fromPos)])[0]
             
         def activate(self):
             self.clearScrollParams()
@@ -1074,7 +1209,7 @@ class GUI(object):
                 for f in self.MULTILINE.textFields: f.doBlink = False
             self.doBlink = True
             mousePos = self.innerClickCoordinates[0] - self.innerOffset[0]
-            if mousePos > self.textComponent.width:
+            if mousePos > self.textComponent.computedWidth:
                 self.indicatorPosition = len(self.textComponent.text)
             else:
                 prevWidth = 0
@@ -1091,7 +1226,7 @@ class GUI(object):
             return self
         
         def updateOverflow(self):
-            self.overflow = max(self.textComponent.width - (self.width - 4), 0)
+            self.overflow = max(self.textComponent.computedWidth - (self.computedWidth - 4), 0)
             if self.overflow > 0:
                 self.textComponent.position[0] = 2 - self.overflow
             else:
@@ -1160,7 +1295,7 @@ class GUI(object):
                     self.lastBlink = datetime.now()
                     self.blinkOn = not self.blinkOn
                 if self.blinkOn:
-                    pygame.draw.rect(self.surface, self.textComponent.color, [self.indicatorPxPosition, 2, 2, self.height-4])
+                    pygame.draw.rect(self.surface, self.textComponent.color, [self.indicatorPxPosition, 2, 2, self.computedHeight-4])
             super(GUI.Container, self).render(largerSurface)
             
         def getClickedChild(self, mouseEvent, offsetX=0, offsetY=0):
@@ -1174,14 +1309,14 @@ class GUI(object):
             self.pages = data.get("pages", [])
             self.currentPage = 0
             self.hideControls = data.get("hideControls", False)
-            self.pageControls = GUI.Container((0, self.height-20), color=state.getColorPalette().getColor("background"), width=self.width, height=20)
+            self.pageControls = GUI.Container((0, self.computedHeight-20), color=state.getColorPalette().getColor("background"), width=self.computedWidth, height=20)
             self.pageLeftButton = GUI.Button((0, 0), " < ", state.getColorPalette().getColor("item"), state.getColorPalette().getColor("accent"),
                                             16, width=40, height=20, onClick=self.pageLeft, onLongClick=self.goToPage)
-            self.pageRightButton = GUI.Button((self.width-40, 0), " > ", state.getColorPalette().getColor("item"), state.getColorPalette().getColor("accent"),
+            self.pageRightButton = GUI.Button((self.computedWidth-40, 0), " > ", state.getColorPalette().getColor("item"), state.getColorPalette().getColor("accent"),
                                             16, width=40, height=20, onClick=self.pageRight, onLongClick=self.goToLastPage)
             self.pageIndicatorText = GUI.Text((0, 0), str(self.currentPage + 1)+" of "+str(len(self.pages)), state.getColorPalette().getColor("item"),
                                             16)
-            self.pageHolder = GUI.Container((0, 0), color=state.getColorPalette().getColor("background"), width=self.width, height=(self.height-20 if not self.hideControls else self.height))
+            self.pageHolder = GUI.Container((0, 0), color=state.getColorPalette().getColor("background"), width=self.computedWidth, height=(self.computedHeight-20 if not self.hideControls else self.computedHeight))
             self.pageIndicatorText.position[0] = GUI.getCenteredCoordinates(self.pageIndicatorText, self.pageControls)[0]
             super(GUI.PagedContainer, self).addChild(self.pageHolder)
             self.pageControls.addChild(self.pageLeftButton)
@@ -1219,14 +1354,14 @@ class GUI(object):
             return self.pages[len(self.pages) - 1]
         
         def generatePage(self, **data):
-            if "width" not in data: data["width"] = self.pageHolder.width
-            if "height" not in data: data["height"] = self.pageHolder.height
+            if "width" not in data: data["width"] = self.pageHolder.computedWidth
+            if "height" not in data: data["height"] = self.pageHolder.computedHeight
             data["isPage"] = True
             return GUI.Container((0, 0), **data)
         
         def addChild(self, component):
             if self.pages == []:
-                self.addPage(self.generatePage(color=self.backgroundColor, width=self.pageHolder.width, height=self.pageHolder.height))
+                self.addPage(self.generatePage(color=self.backgroundColor, width=self.pageHolder.computedWidth, height=self.pageHolder.computedHeight))
             self.getLastPage().addChild(component)
             
         def removeChild(self, component):
@@ -1258,8 +1393,8 @@ class GUI(object):
             self.rows = rows
             self.columns = columns
             super(GUI.PagedContainer, self).__init__(position, **data)
-            self.perRow = ((self.height-20)-(2*self.padding)) / rows
-            self.perColumn = (self.width-(2*self.padding)) / columns
+            self.perRow = ((self.computedHeight-20)-(2*self.padding)) / rows
+            self.perColumn = (self.computedWidth-(2*self.padding)) / columns
             super(GUI.GriddedPagedContainer, self).__init__(position, **data)
             
         def isPageFilled(self, number):
@@ -1276,7 +1411,7 @@ class GUI(object):
                 component.setPosition(newChildPosition)
                 self.getLastPage().addChild(component)
                 return
-            lastChildPosition = self.getLastPage().childComponents[len(self.getLastPage().childComponents) - 1].position[:]
+            lastChildPosition = self.getLastPage().childComponents[len(self.getLastPage().childComponents) - 1].computedPosition[:]
             if lastChildPosition[0] < self.padding + (self.perColumn * (self.columns - 1)):
                 newChildPosition = [lastChildPosition[0]+self.perColumn, lastChildPosition[1]]
             else:
@@ -1294,12 +1429,12 @@ class GUI(object):
             height = self.padding
             if self.pages == []: return self.padding
             for component in self.getLastPage().childComponents:
-                height += component.height + (2*self.margin)
+                height += component.computedHeight + (2*self.margin)
             return height
             
         def addChild(self, component):
             componentHeight = self.getHeightOfComponents()
-            if self.pages == [] or componentHeight + (component.height + 2*self.margin) + (2*self.padding) >= self.pageHolder.height:
+            if self.pages == [] or componentHeight + (component.computedHeight + 2*self.margin) + (2*self.padding) >= self.pageHolder.computedHeight:
                 self.addPage(self.generatePage(color=self.backgroundColor))
                 componentHeight = self.getHeightOfComponents()
             component.setPosition([self.padding, componentHeight])
@@ -1324,12 +1459,13 @@ class GUI(object):
             return None
             
         def addChild(self, component):
-            component.height = self.height - (2*self.padding)
+            component.height = self.computedHeight - (2*self.padding)
             last = self.getLastComponent()
             if last != None:
-                component.setPosition([last.position[0]+last.width+self.margin, self.padding])
+                component.setPosition([last.computedPosition[0]+last.computedWidth+self.margin, self.padding])
             else:
                 component.setPosition([self.padding, self.padding])
+            component.setDimensions()
             super(GUI.ButtonRow, self).addChild(component)
             
         def removeChild(self, component):
@@ -1350,13 +1486,13 @@ class GUI(object):
             self.lastClickCoord = None
             
         def update(self):
-            self.pct = 1.0 * self.scrollContainer.height / self.scrollContainer.maxOffset
+            self.pct = 1.0 * self.scrollContainer.computedHeight / (self.scrollContainer.maxOffset - self.scrollContainer.minOffset)
             self.slide = -self.scrollContainer.offset*self.pct
-            self.sih = self.pct * self.height
+            self.sih = self.pct * self.computedHeight
             
         def render(self, largerSurface):
             self.surface.fill(self.color)
-            pygame.draw.rect(self.surface, state.getColorPalette().getColor("accent"), [0, int(self.slide*(1.0*self.height/self.scrollContainer.height)), self.width, int(self.sih)])
+            pygame.draw.rect(self.surface, state.getColorPalette().getColor("accent"), [0, int(self.slide*(1.0*self.computedHeight/self.scrollContainer.computedHeight)), self.computedWidth, int(self.sih)])
             super(GUI.ScrollIndicator, self).render(largerSurface)
             
         def clearScrollParams(self):
@@ -1370,16 +1506,16 @@ class GUI(object):
                             
     class ScrollableContainer(Container):
         def __init__(self, position, **data): 
-            self.scrollAmount = data.get("scrollAmount", 15) 
+            self.scrollAmount = data.get("scrollAmount", state.getGUI().height / 8) 
             super(GUI.ScrollableContainer, self).__init__(position, **data)
-            self.container = GUI.Container((0, 0), transparent=True, width=self.width-20, height=self.height)
-            self.scrollBar = GUI.Container((self.width-20, 0), width=20, height=self.height)
+            self.container = GUI.Container((0, 0), transparent=True, width=self.computedWidth-20, height=self.computedHeight)
+            self.scrollBar = GUI.Container((self.computedWidth-20, 0), width=20, height=self.computedHeight)
             self.scrollUpBtn = GUI.Image((0, 0), path="res/scrollup.png", width=20, height=40,
                                          onClick=self.scroll, onClickData=(self.scrollAmount,))
-            self.scrollDownBtn = GUI.Image((0, self.scrollBar.height-40), path="res/scrolldown.png", width=20, height=40,
+            self.scrollDownBtn = GUI.Image((0, self.scrollBar.computedHeight-40), path="res/scrolldown.png", width=20, height=40,
                                          onClick=self.scroll, onClickData=(-self.scrollAmount,))
-            self.scrollIndicator = GUI.ScrollIndicator(self, (0, 40), self.backgroundColor, width=20, height=self.scrollBar.height-80, border=1, borderColor=state.getColorPalette().getColor("item"))
-            if self.height >= 120:
+            self.scrollIndicator = GUI.ScrollIndicator(self, (0, 40), self.backgroundColor, width=20, height=self.scrollBar.computedHeight-80, border=1, borderColor=state.getColorPalette().getColor("item"))
+            if self.computedHeight >= 120:
                 self.scrollBar.addChild(self.scrollIndicator)
             self.scrollBar.addChild(self.scrollUpBtn)
             self.scrollBar.addChild(self.scrollDownBtn)
@@ -1387,38 +1523,33 @@ class GUI(object):
             super(GUI.ScrollableContainer, self).addChild(self.scrollBar)
             self.offset = 0
             self.minOffset = 0
-            self.maxOffset = self.height
+            self.maxOffset = self.container.computedHeight
             self.scrollIndicator.update()
             
         def scroll(self, amount):
             if amount < 0:
-                if self.offset - amount - self.height <= -self.maxOffset:
-                    self.scrollTo(-self.maxOffset + self.height)
+                if self.offset - amount - self.computedHeight <= -self.maxOffset:
                     return
             else:
                 if self.offset + amount > self.minOffset:
-                    self.scrollTo(self.minOffset)
+                    #self.offset = -self.minOffset
                     return
             for child in self.container.childComponents:
-                child.position[1] = child.position[1]+amount
+                child.position[1] = child.computedPosition[1]+amount
             self.offset += amount
             self.scrollIndicator.update()
-            
-        def scrollTo(self, amount):
-            self.scroll(-self.offset)
-            self.scroll(amount)
                 
         def getVisibleChildren(self):
             visible = []
             for child in self.container.childComponents:
-                if child.position[1]+child.height >= 0 and child.position[1]-child.height <= self.height:
+                if child.computedPosition[1]+child.computedHeight >= -10 and child.computedPosition[1]-child.computedHeight <= self.computedHeight + 10:
                     visible.append(child)
             return visible
         
         def getClickedChild(self, mouseEvent, offsetX=0, offsetY=0):
             if not self.checkClick(mouseEvent, offsetX, offsetY):
                 return None
-            clicked = self.scrollBar.getClickedChild(mouseEvent, offsetX + self.position[0], offsetY + self.position[1])
+            clicked = self.scrollBar.getClickedChild(mouseEvent, offsetX + self.computedPosition[0], offsetY + self.computedPosition[1])
             if clicked != None: return clicked
             visible = self.getVisibleChildren()
             currChild = len(visible)
@@ -1427,42 +1558,42 @@ class GUI(object):
                 child = visible[currChild]
                 if "SKIP_CHILD_CHECK" in child.__dict__:
                     if child.SKIP_CHILD_CHECK:
-                        if child.checkClick(mouseEvent, offsetX + self.position[0], offsetY + self.position[1]):
+                        if child.checkClick(mouseEvent, offsetX + self.computedPosition[0], offsetY + self.computedPosition[1]):
                             return child
                         else:
                             continue
                     else:
-                        subCheck = child.getClickedChild(mouseEvent, offsetX + self.position[0], offsetY + self.position[1])
+                        subCheck = child.getClickedChild(mouseEvent, offsetX + self.computedPosition[0], offsetY + self.computedPosition[1])
                         if subCheck == None: continue
                         return subCheck
                 else:
-                    if child.checkClick(mouseEvent, offsetX + self.position[0], offsetY + self.position[1]):
+                    if child.checkClick(mouseEvent, offsetX + self.computedPosition[0], offsetY + self.computedPosition[1]):
                         return child
             if self.checkClick(mouseEvent, offsetX, offsetY):
                 return self
             return None
         
         def addChild(self, component):
-            if component.position[1] < self.minOffset: self.minOffset = component.position[1]
-            if component.position[1]+component.height > self.maxOffset: self.maxOffset = component.position[1]+component.height
+            if component.computedPosition[1] < self.minOffset: self.minOffset = component.computedPosition[1]
+            if component.computedPosition[1]+component.computedHeight > self.maxOffset: self.maxOffset = component.computedPosition[1]+component.computedHeight
             self.container.addChild(component)
             self.scrollIndicator.update()
             
         def removeChild(self, component):
             self.container.removeChild(component)
-            if component.position[1] == self.minOffset:
+            if component.computedPosition[1] == self.minOffset:
                 self.minOffset = 0
                 for comp in self.container.childComponents:
-                    if comp.position[1] < self.minOffset: self.minOffset = comp.position[1]
-            if component.position[1] == self.maxOffset:
-                self.maxOffset = self.height
+                    if comp.computedPosition[1] < self.minOffset: self.minOffset = comp.computedPosition[1]
+            if component.computedPosition[1] == self.maxOffset:
+                self.maxOffset = self.computedHeight
                 for comp in self.container.childComponents:
-                    if comp.position[1]+comp.height > self.maxOffset: self.maxOffset = comp.position[1]+comp.height
+                    if comp.computedPosition[1]+comp.computedHeight > self.maxOffset: self.maxOffset = comp.computedPosition[1]+comp.computedHeight
             self.scrollIndicator.update()
                     
         def clearChildren(self):
             self.container.clearChildren()
-            self.maxOffset = self.height
+            self.maxOffset = self.computedHeight
             self.offset = 0
             self.scrollIndicator.update()
             
@@ -1470,12 +1601,13 @@ class GUI(object):
             super(GUI.ScrollableContainer, self).render(largerSurface)
             
         def refresh(self, children=True):
+            #super(GUI.ScrollableContainer, self).refresh()
             self.minOffset = 0
             for comp in self.container.childComponents:
-                if comp.position[1] < self.minOffset: self.minOffset = comp.position[1]
-            self.maxOffset = self.height
+                if comp.computedPosition[1] < self.minOffset: self.minOffset = comp.computedPosition[1]
+            self.maxOffset = self.computedHeight
             for comp in self.container.childComponents:
-                if comp.position[1]+comp.height > self.maxOffset: self.maxOffset = comp.position[1]+comp.height
+                if comp.computedPosition[1]+comp.computedHeight > self.maxOffset: self.maxOffset = comp.computedPosition[1]+comp.computedHeight
             self.scrollIndicator.update()
             self.container.refresh(children)
             
@@ -1488,11 +1620,12 @@ class GUI(object):
             height = 0
             if self.container.childComponents == []: 0
             for component in self.container.childComponents:
-                height += component.height + self.margin
+                height += component.computedHeight + self.margin
             return height
             
         def addChild(self, component):
             component.position[1] = self.getCumulativeHeight()
+            component.setDimensions()
             super(GUI.ListScrollableContainer, self).addChild(component)
             
         def removeChild(self, component):
@@ -1508,12 +1641,12 @@ class GUI(object):
             data["scrollAmount"] = data.get("lineHeight", textComponent.lineHeight if textComponent != DEFAULT else 16)
             super(GUI.TextScrollableContainer, self).__init__(position, **data)
             if textComponent == DEFAULT:
-                self.textComponent = GUI.ExpandingMultiLineText((0, 0), "", state.getColorPalette().getColor("item"), width=self.container.width, height=self.container.height, scroller=self)
+                self.textComponent = GUI.ExpandingMultiLineText((0, 0), "", state.getColorPalette().getColor("item"), width=self.container.computedWidth, height=self.container.computedHeight, scroller=self)
             else:
                 self.textComponent = textComponent
-                if self.textComponent.width == self.width:
+                if self.textComponent.computedWidth == self.computedWidth:
                     self.textComponent.width = self.container.width
-                    self.textComponent.refresh()
+                    #self.textComponent.refresh()
             self.addChild(self.textComponent)
             
         def getTextComponent(self):
@@ -1541,6 +1674,7 @@ class GUI(object):
             self.textFields[self.currentField].activate()
             
         def refresh(self):
+            super(GUI.MultiLineTextEntryField, self).refresh()
             self.clearChildren()
             for tf in self.textFields:
                 self.addChild(tf)
@@ -1551,7 +1685,7 @@ class GUI(object):
         def addField(self, initial_text):
             if len(self.textFields) == self.maxLines: 
                 return
-            field = GUI.TextEntryField((0, 0), initial_text, width=self.container.width, height=self.lineHeight,
+            field = GUI.TextEntryField((0, 0), initial_text, width=self.container.computedWidth, height=self.lineHeight,
                                        backgroundColor=self.backgroundColor, textColor=self.textColor)
             field.border = 0
             field.MULTILINE = self
@@ -1683,21 +1817,26 @@ class GUI(object):
             self.active = False
             self.textEntryField = textEntryField
             self.movedUI = False
-            if self.textEntryField.position[1] + self.textEntryField.height > state.getGUI().height - 120 or self.textEntryField.data.get("slideUp", False):
+            self._symbolFont = GUI.Font("res/symbols.ttf", 10, 20)
+            if self.textEntryField.computedPosition[1] + self.textEntryField.computedHeight > 2*(state.getGUI().height/3) or self.textEntryField.data.get("slideUp", False):
                 state.getActiveApplication().ui.setPosition((0, -80))
                 self.movedUI = True
             self.baseContainer = None
-            self.baseContainer = GUI.Container((0, state.getGUI().height-120), width=state.getGUI().width, height=120)
-            self.keyWidth = self.baseContainer.width / 10
-            self.keyHeight = self.baseContainer.height / 4
-            #self.shift_sym = u"\u21E7" Use pygame.freetype?
-            #self.enter_sym = u"\u23CE"
-            #self.bkspc_sym = u"\u232B"
-            #self.delet_sym = u"\u2326"
-            self.shift_sym = "sh"
-            self.enter_sym = "->"
-            self.bkspc_sym = "<-"
-            self.delet_sym = "del"
+            self.baseContainer = GUI.Container((0, 0), width=state.getGUI().width, height=state.getGUI().height/3)
+            self.baseContainer.setPosition((0, 2*(state.getGUI().height/3)))
+            self.keyWidth = self.baseContainer.computedWidth / 10
+            self.keyHeight = self.baseContainer.computedHeight / 4
+            use_ft = state.getTypingFont().ft_support
+            #if use_ft:
+            self.shift_sym = u"⇧"
+            self.enter_sym = u"⏎"
+            self.bkspc_sym = u"⌫"
+            self.delet_sym = u"⌦"
+#             else:
+#                 self.shift_sym = "sh"
+#                 self.enter_sym = "->"
+#                 self.bkspc_sym = "<-"
+#                 self.delet_sym = "del"
             self.keys1 = [["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
                          ["a", "s", "d", "f", "g", "h", "j", "k", "l", self.enter_sym],
                          [self.shift_sym, "z", "x", "c", "v", "b", "n", "m", ",", "."],
@@ -1718,18 +1857,20 @@ class GUI(object):
                         button = GUI.KeyboardButton((sym * self.keyWidth, row * self.keyHeight), "", self.keys2[row][sym],
                                                     onClick=self.insertChar, onClickData=(self.keys1[row][sym],), 
                                                     onLongClick=self.insertChar, onLongClickData=(self.keys2[row][sym],),
-                                                    width=self.keyWidth*5, height=self.keyHeight)
+                                                    width=self.keyWidth*5, height=self.keyHeight, freetype=use_ft)
                     else:
                         if symbol == self.shift_sym or symbol == self.enter_sym or symbol == self.bkspc_sym or symbol == self.delet_sym:
                             button = GUI.KeyboardButton((sym * self.keyWidth, row * self.keyHeight), self.keys1[row][sym], self.keys2[row][sym],
                                                     onClick=self.insertChar, onClickData=(self.keys1[row][sym],), 
                                                     onLongClick=self.insertChar, onLongClickData=(self.keys2[row][sym],),
-                                                    width=self.keyWidth, height=self.keyHeight, border=1, borderColor=state.getColorPalette().getColor("accent"))
+                                                    width=self.keyWidth, height=self.keyHeight, border=1, borderColor=state.getColorPalette().getColor("accent"),
+                                                    font=self._symbolFont, freetype=use_ft)
                         else:
                             button = GUI.KeyboardButton((sym * self.keyWidth, row * self.keyHeight), self.keys1[row][sym], self.keys2[row][sym],
                                                         onClick=self.insertChar, onClickData=(self.keys1[row][sym],), 
                                                         onLongClick=self.insertChar, onLongClickData=(self.keys2[row][sym],),
-                                                        width=self.keyWidth, height=self.keyHeight)
+                                                        width=self.keyWidth, height=self.keyHeight,
+                                                        freetype=use_ft)
                     self.baseContainer.addChild(button)
                     sym += 1
                 row += 1
@@ -1743,8 +1884,8 @@ class GUI(object):
         def setTextEntryField(self, field):
             self.textEntryField = field
             self.active = True
-            if self.textEntryField.position[1] + self.textEntryField.height > state.getGUI().height - 120 or self.textEntryField.data.get("slideUp", False):
-                state.getActiveApplication().ui.setPosition((0, -80))
+            if self.textEntryField.computedPosition[1] + self.textEntryField.height > state.getGUI().height - self.baseContainer.computedHeight or self.textEntryField.data.get("slideUp", False):
+                state.getActiveApplication().ui.setPosition((0, -self.baseContainer.computedHeight))
                 self.movedUI = True
             
         def getEnteredText(self):
@@ -1789,8 +1930,8 @@ class GUI(object):
         def __init__(self, position, **data):
             self.position = list(position)
             self.displayed = False
-            self.width = data.get("width", state.getGUI().width)
-            self.height = data.get("height", state.getGUI().height-40)
+            self.width = int(int(data.get("width").rstrip("%")) * (state.getActiveApplication().ui.width/100.0)) if type(data.get("width")) == str else data.get("width", state.getGUI().width)
+            self.height = int(int(data.get("height").rstrip("%")) * (state.getActiveApplication().ui.height/100.0)) if type(data.get("height")) == str else data.get("height", state.getGUI().height-40)
             self.color = data.get("color", state.getColorPalette().getColor("background"))
             self.baseContainer = GUI.Container((0, 0), width=state.getGUI().width, height=state.getActiveApplication().ui.height, color=(0, 0, 0, 0), onClick=self.hide)
             self.container = data.get("container", GUI.Container(self.position[:], width=self.width, height=self.height, color=self.color))
@@ -1823,7 +1964,7 @@ class GUI(object):
             self.text = text
             self.response = None
             self.buttonList = GUI.Dialog.getButtonList(actionButtons, self) if type(actionButtons[0]) == str else actionButtons
-            self.textComponent = GUI.MultiLineText((2, 2), self.text, state.getColorPalette().getColor("item"), 16, width=self.container.width-4, height=96)
+            self.textComponent = GUI.MultiLineText((2, 2), self.text, state.getColorPalette().getColor("item"), 16, width=self.container.computedWidth-4, height=96)
             self.buttonRow = GUI.ButtonRow((0, 96), width=state.getGUI().width, height=40, color=(0, 0, 0, 0), padding=0, margin=0)
             for button in self.buttonList:
                 self.buttonRow.addChild(button)
@@ -1856,7 +1997,7 @@ class GUI(object):
             blist = []
             for title in titles:
                 blist.append(GUI.Button((0, 0), title, state.getColorPalette().getColor("item"), state.getColorPalette().getColor("background"), 18,
-                                        width=dialog.container.width/len(titles), height=40,
+                                        width=dialog.container.computedWidth/len(titles), height=40,
                                         onClick=dialog.recordResponse, onClickData=(title,)))
             return blist
             
@@ -1904,9 +2045,9 @@ class GUI(object):
             cancelbtn = GUI.Button((0,0), "Cancel", state.getColorPalette().getColor("item"), state.getColorPalette().getColor("background"), 18,
                                width=state.getGUI().width/2, height=40, onClick=self.recordResponse, onClickData=("Cancel",))
             super(GUI.AskDialog, self).__init__(title, text, [okbtn, cancelbtn], onResposeRecorded, onResponseRecordedData)
-            self.textComponent.height -= 20
+            self.textComponent.computedHeight -= 20
             self.textComponent.refresh()
-            self.textEntryField = GUI.TextEntryField((0, 80), width=self.container.width, height=20)
+            self.textEntryField = GUI.TextEntryField((0, 80), width=self.container.computedWidth, height=20)
             self.container.addChild(self.textEntryField)
             
         def returnRecordedResponse(self):
@@ -1920,7 +2061,7 @@ class GUI(object):
             self.baseContainer = GUI.Container((0, 0), width=state.getGUI().width, height=state.getActiveApplication().ui.height, color=(0, 0, 0, 0.5))
             self.container = customComponent
             self.buttonList = GUI.Dialog.getButtonList(actionButtons, self) if type(actionButtons[0]) == str else actionButtons
-            self.buttonRow = GUI.ButtonRow((0, self.container.height-33), width=self.container.width, height=40, color=(0, 0, 0, 0), padding=btnPad, margin=btnMargin)
+            self.buttonRow = GUI.ButtonRow((0, self.container.computedHeight-33), width=self.container.computedWidth, height=40, color=(0, 0, 0, 0), padding=btnPad, margin=btnMargin)
             for button in self.buttonList:
                 self.buttonRow.addChild(button)
             self.container.addChild(self.buttonRow)
@@ -1931,10 +2072,10 @@ class GUI(object):
             
     class NotificationMenu(Overlay):        
         def __init__(self):
-            super(GUI.NotificationMenu, self).__init__((40, 20), width=200, height=260, color=(20, 20, 20, 200))
+            super(GUI.NotificationMenu, self).__init__(("20%", "25%"), width="80%", height="75%", color=(20, 20, 20, 200))
             self.text = GUI.Text((1, 1), "Notifications", (200, 200, 200), 18)
             self.clearAllBtn = GUI.Button((self.width-50, 0), "Clear", (200, 200, 200), (20, 20, 20), width=50, height=20, onClick=self.clearAll)
-            self.nContainer = GUI.ListScrollableContainer((0, 20), width=200, height=240, transparent=True, margin=5)
+            self.nContainer = GUI.ListScrollableContainer((0, 20), width="80%", height=self.height-20, transparent=True, margin=5)
             self.addChild(self.text)
             self.addChild(self.clearAllBtn)
             self.addChild(self.nContainer)
@@ -2052,7 +2193,7 @@ class GUI(object):
                 el_c.addChild(elem)
                 el_c.SKIP_CHILD_CHECK = True
                 comps.append(el_c)
-                acc_height += el_c.height
+                acc_height += el_c.computedHeight
             return comps
             
         def onSelect(self, newVal):
@@ -2064,7 +2205,7 @@ class GUI(object):
             
         def render(self, largerSurface):
             super(GUI.Selector, self).render(largerSurface)
-            pygame.draw.circle(largerSurface, state.getColorPalette().getColor("accent"), (self.position[0]+self.width-(self.height/2)-2, self.position[1]+(self.height/2)), (self.height/2)-5)
+            pygame.draw.circle(largerSurface, state.getColorPalette().getColor("accent"), (self.computedPosition[0]+self.computedWidth-(self.computedHeight/2)-2, self.computedPosition[1]+(self.computedHeight/2)), (self.computedHeight/2)-5)
                                      
         def getClickedChild(self, mouseEvent, offsetX=0, offsetY=0):
             if self.checkClick(mouseEvent, offsetX, offsetY):
@@ -2096,10 +2237,7 @@ class Application(object):
         
     @staticmethod
     def getListings():
-        listingsfile = open("apps/apps.json", "rU")
-        app_listings = json.load(listingsfile)
-        listingsfile.close()
-        return app_listings
+        return readJSON("apps/apps.json")
     
     @staticmethod
     def chainRefreshCurrent():
@@ -2138,9 +2276,7 @@ class Application(object):
     def install(packageloc):
         package = ZipFile(packageloc, "r")
         package.extract("app.json", "temp/")
-        app_listing = open("temp/app.json", "rU")
-        app_info = json.loads(str(unicode(app_listing.read(), errors="ignore")))
-        app_listing.close()
+        app_info = readJSON("temp/app.json")
         app_name = str(app_info.get("name"))
         if app_name not in state.getApplicationList().applications.keys():
             os.mkdir(os.path.join("apps/", app_name))
@@ -2162,9 +2298,7 @@ class Application(object):
         
     @staticmethod
     def registerDebugApp(path):
-        app_listing = open(os.path.join(path, "app.json"), "rU")
-        app_info = json.loads(str(unicode(app_listing.read(), errors="ignore")))
-        app_listing.close()
+        app_info = readJSON(os.path.join(path, "app.json"))
         app_name = str(app_info.get("name"))
         alist = Application.getListings()
         alist[os.path.join("apps/", app_name)] = app_name
@@ -2177,8 +2311,7 @@ class Application(object):
     def __init__(self, location):
         self.parameters = {}
         self.location = location
-        infofile = open(os.path.join(location, "app.json").replace("\\", "/"), "rU")
-        app_data = json.loads(str(unicode(infofile.read(), errors="ignore")))
+        app_data = readJSON(os.path.join(location, "app.json").replace("\\", "/"))
         self.name = str(app_data.get("name"))
         self.title = str(app_data.get("title", self.name))
         self.version = float(app_data.get("version", 0.0))
@@ -2207,10 +2340,10 @@ class Application(object):
         if "onPause" in self.parameters: self.evtHandlers["onPause"] = getattr(self.module, self.parameters["onPause"])
         if "onResume" in self.parameters: self.evtHandlers["onResume"] = getattr(self.module, self.parameters["onResume"])
         if "onCustom" in self.parameters: self.evtHandlers["onCustom"] = getattr(self.module, self.parameters["onCustom"])
+        if "onOSLaunch" in self.parameters: self.evtHandlers["onOSLaunch"] = getattr(self.module, self.parameters["onOSLaunch"])
         self.thread = Thread(self.mainMethod, **self.evtHandlers)
         self.ui = GUI.AppContainer(self)
         self.dataStore = DataStore(self)
-        infofile.close()
         self.thread = Thread(self.mainMethod, **self.evtHandlers)
         
     def getModule(self):
@@ -2293,6 +2426,9 @@ class ApplicationList(object):
         
     def getApplicationList(self):
         return self.applications.values()
+    
+    def getApplicationNames(self):
+        return self.applications.keys()
         
     def pushActiveApp(self, app):
         if app not in self.activeApplications:
@@ -2321,11 +2457,11 @@ class ApplicationList(object):
     def reloadList(self):
         applist = Application.getListings()
         for key in dict(applist).keys():
-            if applist.get(key) not in self.applications.keys():
-                try:
+            try:
+                if (applist.get(key) not in self.applications.keys()) and not state.getActiveApplication().name == key:
                     self.applications[applist.get(key)] = Application(key)
-                except:
-                    State.error_recovery("App init error: "+key, "NoAppDump")
+            except:
+                State.error_recovery("App init error: "+key, "NoAppDump")
         for key in self.applications.keys():
             if key not in applist.values():
                 del self.applications[key]
@@ -2597,7 +2733,6 @@ class State(object):
         while True:
             #Limit FPS
             state.getGUI().timer.tick(state.getGUI().update_interval)
-            state.getGUI().monitorFPS()
             #Update event queue
             state.getEventQueue().check()
             #Refresh main thread controller
@@ -2613,16 +2748,13 @@ class State(object):
             if state.getKeyboard() != None and state.getKeyboard().active:
                 state.getKeyboard().render(screen)
             
-            if state.getGUI().update_interval <= 5:
-                pygame.draw.rect(screen, (255, 0, 0), [state.getGUI().width-5, 0, 5, 5])
-            
             state.getGUI().refresh()
             #Check Events
             latestEvent = state.getEventQueue().getLatestComplete()
             if latestEvent != None:
                 clickedChild = None
                 if state.getKeyboard() != None and state.getKeyboard().active:
-                    if latestEvent.pos[1] < state.getKeyboard().baseContainer.position[1]:
+                    if latestEvent.pos[1] < state.getKeyboard().baseContainer.computedPosition[1]:
                         if state.getActiveApplication().ui.getClickedChild(latestEvent) == state.getKeyboard().textEntryField:
                             state.getKeyboard().textEntryField.onClick()
                         else:
@@ -2631,7 +2763,7 @@ class State(object):
                     clickedChild = state.getKeyboard().baseContainer.getClickedChild(latestEvent)
                     if clickedChild == None:
                         clickedChild = state.getActiveApplication().ui.getClickedChild(latestEvent)
-                    if clickedChild == None and state.getKeyboard().textEntryField.position == [0, 0] and state.getKeyboard().textEntryField.checkClick(latestEvent):
+                    if clickedChild == None and state.getKeyboard().textEntryField.computedPosition == [0, 0] and state.getKeyboard().textEntryField.checkClick(latestEvent):
                         clickedChild = state.getKeyboard().textEntryField
                 else:
                     if latestEvent.pos[1] < state.getGUI().height - 40:
@@ -2668,11 +2800,21 @@ class State(object):
         
     
 if __name__ == "__main__":
+    try:
+        settings = readJSON("res/settings.json")
+    except:
+        print "Error loading settings from res/settings.json"
     state = State()
     globals()["state"] = state
     __builtin__.state = state
     #TEST
     #State.state_shell()
+    for app in state.getApplicationList().getApplicationList():
+        if app.evtHandlers.get("onOSLaunch", None) != None:
+            try:
+                app.evtHandlers.get("onOSLaunch")()
+            except:
+                State.error_recovery("App startup task failed to run properly.", "App: " + str(app.name))
     state.getApplicationList().getApp("home").activate()
     try:
         State.main()

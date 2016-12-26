@@ -4,6 +4,8 @@ from urllib import urlretrieve
 from apps.pman.fuzzywuzzy import fuzz
 from datetime import timedelta
 
+import time
+
 """
 PMan Specific app.json parameters.
 Specified under the key "pman".
@@ -136,32 +138,32 @@ class UIParts:
     @staticmethod
     def smallAppEntry(appname, onC, fits="appui"):
         if fits == "appui": fits = app.ui
-        cont = pyos.GUI.Container((0, 0), width=fits.width, height=20, border=1, onClick=onC)
+        cont = pyos.GUI.Container((0, 0), width=fits.computedWidth, height=20, border=1, onClick=onC)
         cont.addChild(AppIcon((0, 0), appname, 20, 20, onClick=onC))
         cont.addChild(pyos.GUI.Text((22, 2), cache.get(appname)["title"], pyos.DEFAULT, 16, onClick=onC))
-        cont.addChild(AppActionButton((cont.width-40, 0), appname, 40, 20))
+        cont.addChild(AppActionButton((cont.computedWidth-40, 0), appname, 40, 20))
         return cont
     
     @staticmethod
     def normalAppEntry(appname, onC, fits="appui"):
         if fits == "appui": fits = app.ui
-        cont = pyos.GUI.Container((0, 0), width=fits.width, height=40, border=1, onClick=onC)
+        cont = pyos.GUI.Container((0, 0), width=fits.computedWidth, height=40, border=1, onClick=onC)
         cont.addChild(AppIcon((0, 0), appname, 40, 40, onClick=onC))
         cont.addChild(pyos.GUI.Text((42, 2), cache.get(appname)["title"], pyos.DEFAULT, 18, onClick=onC))
         cont.addChild(pyos.GUI.Text((42, 22), cache.get(appname)["author"], pyos.DEFAULT, 14, onClick=onC))
-        cont.addChild(AppActionButton((cont.width-60, 0), appname, 60, 40))
+        cont.addChild(AppActionButton((cont.computedWidth-60, 0), appname, 60, 40))
         return cont
     
     @staticmethod
     def largeAppEntry(appname, onC, fits="appui"):
         if fits == "appui": fits = app.ui
-        cont = pyos.GUI.Container((0, 0), width=fits.width, height=64, border=1, onClick=onC)
+        cont = pyos.GUI.Container((0, 0), width=fits.computedWidth, height=64, border=1, onClick=onC)
         cont.addChild(AppIcon((0, 0), appname, 40, 40, onClick=onC))
         cont.addChild(pyos.GUI.Text((42, 2), cache.get(appname)["title"], pyos.DEFAULT, 18, onClick=onC))
         cont.addChild(pyos.GUI.Text((42, 22), cache.get(appname)["author"], pyos.DEFAULT, 14, onClick=onC))
-        cont.addChild(AppActionButton((cont.width-60, 0), appname, 60, 40))
+        cont.addChild(AppActionButton((cont.computedWidth-60, 0), appname, 60, 40))
         dt = cache.get(appname).get("description", "No Description.")
-        cont.addChild(pyos.GUI.MultiLineText((2, 40), dt[:dt.find(".")], pyos.DEFAULT, 12, width=cont.width, height=24))
+        cont.addChild(pyos.GUI.MultiLineText((2, 40), dt[:dt.find(".")], pyos.DEFAULT, 12, width=cont.computedWidth, height=24))
         return cont
     
 class SizeSelector(pyos.GUI.Selector):
@@ -244,7 +246,7 @@ class UpdateScreen(Screen):
         au = 0
         for lapp in sorted(state.getApplicationList().getApplicationList(), key=lambda x: x.title):
             if cache.get(lapp.name).get("version", 0.0) > lapp.version:
-                self.scroller.addChild(self.sizesel.getEntry(lapp.name, pman.openScreen(AppScreen(lapp.name)), self.scroller.container))
+                self.scroller.addChild(self.sizesel.getEntry(lapp.name, AppScreen(lapp.name).activate, self.scroller.container))
                 au += 1
         self.statustxt.setText(str(au)+" Updates")
         self.scroller.removeChild(txt)
@@ -382,6 +384,7 @@ class MainScreen(Screen):
 class Cache(pyos.DataStore):
     def __init__(self, doDialog=True):
         self.dsPath = "apps/pman/cache.json"
+        self.application = app
         self.featured = []
         self.progressInfo = "Updating Cache"
         self.dialog = None if not doDialog else ProgressDialog()
@@ -449,9 +452,9 @@ class Installer(object):
         if self.local:
             try:
                 zf = pyos.ZipFile(self.name, "r")
-                zf.extract("app.json", "temp/pman_app.json")
+                zf.extract("app.json", "temp/")
                 self.path = self.name
-                jd = readJSON("temp/pman_app.json")
+                jd = readJSON("temp/app.json")
                 self.name = jd["name"]
                 if jd.get("pman", {}).get("min_os", 0.0) > pman.sysInf.get("version"):
                     pyos.GUI.ErrorDialog("The package requires a newer version of Python OS.").display()
@@ -466,7 +469,7 @@ class Installer(object):
         
     @staticmethod
     def localInstallSelect(path):
-        Installer(path, True)
+        Installer(path, True).start()
         
     @staticmethod
     def localAsk():
@@ -474,20 +477,17 @@ class Installer(object):
                                                                           onSelect=Installer.localInstallSelect).display()
         
     @staticmethod
-    def getDependencies(appname, deps=[], oan=None):
-        if deps == []: 
-            deps = cache.get(appname).get("pman", {}).get("depends", [])
-            oan = appname
+    def getDependencies(appname):
+        deps = cache.get(appname).get("pman", {}).get("depends", [])
+        print appname + " depends on " + str(deps)
         for d in deps:
             if d == appname:
                 print "Warning: The app "+appname+" depends on itself."
+                deps.remove(d)
                 continue
-            sd = Installer.getDependencies(d, deps, oan)
+            sd = cache.get(d).get("pman", {}).get("depends", [])
             for s in sd:
-                if s == oan:
-                    print "Warning: The dependency of "+appname+", "+s+", depends on the original package "+oan+"."
-                    continue
-                if s not in deps or cache.get(s).get("version") > state.getApplicationList().getApp(s).version:
+                if s not in deps and s != appname: 
                     deps.append(s)
         return deps
         
@@ -502,16 +502,17 @@ class Installer(object):
         toinst = [self.name] + deps
         post_install = []
         for tia in toinst:
+            if not self.local and tia in state.getApplicationList().getApplicationNames() and cache.get(tia).get("version") <= state.getApplicationList().getApp(tia).version:
+                print tia + " is already installed at the newest version."
+                toinst.remove(tia)
+                continue
             if cache.get(tia).get("pman", {}).get("min_os", 0.0) > pman.sysInf.get("version"):
                 self.dialog.update("!!! The install cannot continue because the package "+tia+" requires a newer version of Python OS.")
                 return
-            if tia in state.getApplicationList().applications.keys():
-                toinst.remove(tia)
-                continue
             pim = cache.get(tia).get("pman", {}).get("onInstalled", None)
             if pim != None:
                 post_install.append([tia, pim])
-        if tia == []:
+        if toinst == []:
             print self.name+" and all its dependencies are already installed."
             return
         self.dialog.update("The following packages will be installed:")
@@ -575,6 +576,13 @@ class PackageManager(object):
         
     def checkDBFresh(self):
         lupd = app.dataStore.get("lastUpdate", None)
+        try:
+            if len(cache.getStore().keys()) <= 1:
+                print "Empty Cache"
+                app.dataStore.set("featured", [])
+                raise AttributeError
+        except:
+            lupd = None
         if lupd != None: diffdel = (pyos.datetime.now() - pyos.datetime.strptime(lupd, "%a %b %d %H:%M:%S %Y"))
         if lupd == None or diffdel > timedelta(days=1):
             cache.bgUpdate()
